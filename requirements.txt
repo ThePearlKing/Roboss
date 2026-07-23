@@ -1,7 +1,14 @@
 # Roboss Linux port — Python deps.
-# Standard library only (tkinter, threading, subprocess). No pip packages required.
+# The classic app is standard-library only (tkinter, threading, subprocess).
 #
 # System deps (install via your package manager, not pip):
 #   sudo apt install python3-tk xdotool
 # Optional, to render the Roboss.jpg mascot:
 #   sudo apt install python3-pil python3-pil.imagetk
+#
+# Roboboss mode (autonomous LLM agent) extras:
+#   sudo apt install python3-pil          # screenshots for the "see" action
+#   sudo apt install python3-xlib         # fast, occlusion-free window capture
+#   (Pillow + python-xlib also installable via pip: pip install Pillow python-xlib)
+# Plus a local Ollama server: https://ollama.com  (text model + a vision model,
+#   e.g. `ollama pull qwen3` and `ollama pull qwen2.5vl:3b`)
