@@ -1176,12 +1176,11 @@ class Agent:
         return "Saw the screen: " + desc.strip()
 
     LOCATE_PROMPT = (
-        "Look at this image of an app/game window.{zoom} Find: {target}\n"
+        "This image is {w}x{h} pixels.{zoom} Find: {target}\n"
         "Reply with ONLY a JSON object and nothing else:\n"
-        '{{"found": true or false, "x": <0-100>, "y": <0-100>}}\n'
-        "where x,y are the CENTER of that target as a PERCENT of THIS image "
-        "(x: 0=left,100=right; y: 0=top,100=bottom). If it is not visible, set "
-        "found=false.")
+        '{{"found": true or false, "x": <pixel X>, "y": <pixel Y>}}\n'
+        "where x,y are the CENTER of the target in PIXELS in this image "
+        "(x from 0 to {w}, y from 0 to {h}). If it is not visible, found=false.")
 
     def _locate(self, model, target, box):
         """One vision localization pass. `box` = window-% crop (or None=full).
@@ -1189,10 +1188,18 @@ class Agent:
         path = os.path.join(ASSET_DIR, ".baspis_view.png")
         if not self.rbx.screenshot(path, region=box):
             return None
-        zoom = " This is a tight zoomed-in crop; the target should be near the center." if box else ""
+        try:
+            from PIL import Image
+            iw, ih = Image.open(path).size
+        except Exception:
+            iw, ih = 1000, 1000
+        zoom = (" It is a zoomed-in crop; the target should be near the center."
+                if box else "")
         try:
             reply = self.ollama.vision(
-                model, self.LOCATE_PROMPT.format(zoom=zoom, target=target), path)
+                model,
+                self.LOCATE_PROMPT.format(w=iw, h=ih, zoom=zoom, target=target),
+                path)
         except (urllib.error.URLError, OSError, ValueError):
             return None
         finally:
@@ -1207,10 +1214,19 @@ class Agent:
             ix, iy = float(obj["x"]), float(obj["y"])
         except (KeyError, ValueError, TypeError):
             return None
+        # Coords may be pixels (Qwen-VL style) or 0-100 percent. If both are
+        # <=100 treat as percent, else normalize by the image size.
+        if ix <= 100 and iy <= 100:
+            fx, fy = ix / 100.0, iy / 100.0
+        else:
+            fx = ix / iw if iw else 0.0
+            fy = iy / ih if ih else 0.0
+        fx = max(0.0, min(fx, 1.0))
+        fy = max(0.0, min(fy, 1.0))
         if box:
             x0, y0, x1, y1 = box
-            return x0 + ix / 100.0 * (x1 - x0), y0 + iy / 100.0 * (y1 - y0)
-        return ix, iy
+            return x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
+        return fx * 100.0, fy * 100.0
 
     def _click_object(self, target, region=None):
         """Locate a named target and click its exact center, using a
@@ -1226,28 +1242,25 @@ class Agent:
         self.app.agent_status(seeing=True)
         wx = wy = None
         try:
-            # pass 0 = full (or given region); passes 1..2 = tight refine crops
-            half = [(20.0, 16.0), (10.0, 9.0)]     # crop half-size per refine
-            cur = box
-            for i in range(3):
-                loc = self._locate(model, target, cur)
+            # coarse pass (given region); if a region was given and it misses,
+            # fall back to the full window before giving up
+            loc = self._locate(model, target, box)
+            if loc is None and box is not None:
+                loc = self._locate(model, target, None)
+            if loc is None:
+                return ("Could not find '%s' on screen. 'see' first to confirm "
+                        "it is visible, or describe it differently." % target)
+            wx, wy = loc
+            # refine: re-look at a tight crop centered on the current guess
+            for hw, hh in ((22.0, 18.0), (11.0, 9.0)):
+                nb = (max(0.0, wx - hw), max(0.0, wy - hh),
+                      min(100.0, wx + hw), min(100.0, wy + hh))
+                loc = self._locate(model, target, nb)
                 if loc is None:
                     break                          # keep the last good estimate
                 wx, wy = loc
-                if i >= len(half):
-                    break
-                hw, hh = half[i]
-                nb = (max(0.0, wx - hw), max(0.0, wy - hh),
-                      min(100.0, wx + hw), min(100.0, wy + hh))
-                cur_w = 100.0 if cur is None else (cur[2] - cur[0])
-                if (nb[2] - nb[0]) >= cur_w - 1:   # not actually zooming in
-                    break
-                cur = nb
         finally:
             self.app.agent_status(seeing=False)
-        if wx is None:
-            return ("Could not find '%s' on screen. Try a region zoom "
-                    "(e.g. hotbar / bottom-center) or 'see' first." % target)
         self.rbx.click_pct(wx, wy)
         self.app.agent_log("  🎯 clicked '%s' at (%.1f%%, %.1f%%)" % (target, wx, wy))
         return ("Clicked '%s' at (%.1f%%, %.1f%%). The screen may have changed "
