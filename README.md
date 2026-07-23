@@ -17,6 +17,12 @@ It has two modes:
 
 ![license](https://img.shields.io/badge/license-CC0_1.0_Universal-blue)
 
+## Screenshots
+
+| Normal mode | Roboboss mode |
+|-------------|---------------|
+| ![Normal mode](screenshot-normal.png) | ![Roboboss mode](screenshot-roboboss.png) |
+
 ---
 
 ## Requirements
