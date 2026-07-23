@@ -1,108 +1,148 @@
-## Roboss (Linux port)
+# Roboss
 
-Roblox automation application. This is a **Linux port** of the original Windows
-[Roboss](https://github.com/MBrassey/Roboss) by Matt Brassey, which was written
-in AutoIt. The port reimplements the same behavior in Python using **tkinter**
-for the GUI and **xdotool** for X11 window activation and input injection.
+A Linux port of [Roboss](https://github.com/MBrassey/Roboss) — a Roblox
+automation toy by Matt Brassey, originally written in AutoIt for Windows. This
+version reimplements it in Python with a **tkinter** GUI and drives the game
+through **xdotool** (X11 window activation + key/mouse injection).
 
-![licensebadge](https://img.shields.io/badge/license-CC0_1.0_Universal-blue)
+It has two modes:
 
-### Requirements
+- **Normal** — the classic Roboss: anti-idle, chat "wisdom", dance, jump, camera
+  wiggle, and recording.
+- **Roboboss** — an autonomous agent that connects a *robobaspis* to a local
+  [Ollama](https://ollama.com) LLM and lets it **see the screen and play on its
+  own** — move, click buttons, read menus and money, use tools, and run routines
+  it programs itself. It can target Roblox **or any other window** on your
+  computer.
 
-- Linux with an **X11** session (`echo $XDG_SESSION_TYPE` → `x11`).
-  Wayland is not supported for key injection — `xdotool` needs X11/XWayland.
-- Python 3.8+ with tkinter (`sudo apt install python3-tk`)
-- `xdotool` (`sudo apt install xdotool`)
+![license](https://img.shields.io/badge/license-CC0_1.0_Universal-blue)
 
-Optional: install `python3-pil` / Pillow to render the `Roboss.jpg` mascot in
-the window. Without it the GUI still works; the image is just skipped (tkinter's
-built-in `PhotoImage` can't decode JPEG).
+---
 
-### Run
+## Requirements
+
+- Linux with an **X11** session (`echo $XDG_SESSION_TYPE` → `x11`). Wayland is
+  not supported for input injection (xdotool needs X11/XWayland).
+- **Python 3.8+** with tkinter — `sudo apt install python3-tk`
+- **xdotool** — `sudo apt install xdotool`
+
+Optional (Normal mode works without these):
+
+- **Pillow** — renders the mascot and captures screenshots for the agent
+  `sudo apt install python3-pil`
+- **python-xlib** — fast, occlusion-free window capture + the global stop hotkey
+  `sudo apt install python3-xlib`
+- **wmctrl** — lists open windows for the target picker
+  `sudo apt install wmctrl`
+
+For **Roboboss** mode you also need a running Ollama server with a text model and
+a vision model:
+
+```bash
+ollama serve                 # if not already running
+ollama pull qwen3            # the "brain" (any chat model works)
+ollama pull qwen2.5vl:3b     # the "eyes" (any vision model works)
+```
+
+## Run
 
 ```bash
 python3 roboss.py
 ```
 
-The window must match the title `Roblox`. Launch your Roblox client (e.g. via
-[Sober](https://sober.vinegarhq.org/) or the web player) before starting.
+Launch your Roblox client first — this port targets **[Sober](https://sober.vinegarhq.org/)**
+(the VinegarHQ Roblox client) by matching its window, and also matches a window
+titled `Roblox` (web player, Wine, etc.).
 
-### What it does
+---
 
-- **awake()** — periodically focuses the Roblox window and sends the Break
-  (`Pause`) key to keep the character from going idle. Delay between pokes is
-  randomized to look organic.
-- **sayings()** — opens chat (`/`), types a wise message, presses Enter.
-  Randomized cadence; stops after ~200 cycles and re-enables the button.
-- **dance()** — sends `/e dance`. Re-triggers at randomized intervals until Stop.
-- **jump()** — presses `space` every ~40–60s, jittered.
-- **camera()** — smoothly tilts the camera a little (right-mouse drag) every
-  ~45–75s.
-- **record()** — presses `F12` to toggle Roblox recording on start/stop.
+## Normal mode
 
-### Usage
+Pick options on the left, then hit **Start!**; **Stop** halts everything.
 
-Click any options on the left (SpeakWisdom / Dance / Jump / Camera / Record),
-then click **Start!** on the right. Click **Stop** to halt everything. Options
-can be added while running, but individual options can't be stopped without a
-full Stop.
+- **SpeakWisdom** — opens chat and types a rotating set of quotes.
+- **Dance** — sends `/e dance` on a randomized cadence.
+- **Jump** — taps space every ~40–60 s.
+- **Camera** — smoothly tilts the camera a little every ~45–75 s.
+- **Record** — toggles Roblox recording with `F12`.
 
-The two little circle icons under the logo:
+Cadence is randomized to look organic. The two small circle icons under the logo:
+**⇄** switches to Roboboss mode, and **⇧** pins the window on top of the game so
+you can watch it while the game keeps focus.
 
-- **⇄ mode** — switch between **Normal** and **Roboboss** mode.
-- **⇧ pin** — keep the Roboss window floating **above** Roblox/Sober so you can
-  watch it while automation still targets the game. Lights up cyan when on.
+---
 
-### Roboboss mode (autonomous LLM agent)
+## Roboboss mode
 
-Roboboss connects a *robobaspis* to a local **[Ollama](https://ollama.com)**
-server and lets it act autonomously in Roblox by emitting one action at a time.
-Actions: **see** (screenshot → vision description), **move** (WASD), **look**
-(camera), **jump**, **reset** (death+respawn to unstick), **key**, **click**
-(by % position from `see`), **say** (chat), **wait**, **done**.
+Switch with the **⇄** icon. A *robobaspis* (Sacabambaspis avatar) reasons with a
+local LLM and acts on the target window one step at a time. It's dark when idle
+and lights up while thinking/acting, with a speech bubble showing what it's
+"saying".
 
-- **Robobaspis** (left) — the Sacabambaspis avatar. Dark when idle, lit with a
-  glowing border while thinking/acting. A **speech bubble** shows what it's
-  thinking/saying (any `text` the model emits).
-- **Settings** (top right) — name, Ollama **model**, **👁 vision model** (for the
-  `see` action; auto-prefers a vision-capable model, `↻` to refresh), server URL,
-  **personality**, **goal/prompt**, temperature, max steps. **Save** writes the
-  config locally.
-- **Controls** (bottom right) — **Start / Pause / Stop**, a **message box** to
-  send the running baspis new info without stopping it (delivered before its next
-  step), the **thoughts/actions** log, and the mode/pin icons.
-- **Saved robobaspis** (left) — Load / Delete / New. Configs are stored as JSON
-  in `robobaspis/` (git-ignored).
+### Controls
 
-**Vision:** the `see` action screenshots the game window and asks a vision model
-to describe key prompts, clickable buttons (as `%` positions), tools, and money
-numbers. It's on-demand — the agent looks before clicking menus, equipping
-tools, answering key-prompts, or reading numbers.
+- **Left** — the robobaspis, its connection/state, and your saved robobaspis
+  (Save / Load / Delete / New; stored as JSON in `robobaspis/`, git-ignored).
+- **Top right — settings:** name, **model**, **👁 vision model**, **target
+  window**, personality, goal/prompt, temperature, and max steps (with a rainbow
+  **∞** that appears when steps are infinite — set `-1`).
+- **Bottom right:** **Start / Pause / Stop**, a **message box** to feed the
+  running agent new info without stopping it, and the live thoughts/actions log.
+- **Global stop hotkey: `Ctrl+Alt+S`** — stops the agent from anywhere, even
+  while the game has focus.
 
-Requires an Ollama server running locally (`ollama serve`) with a text model
-(e.g. `ollama pull qwen3`) and, for vision, a multimodal model
-(`ollama pull qwen2.5vl:3b`). The agent controls the same focused Roblox/Sober
-window via xdotool, so keep the game open.
+### Any window, not just Roblox
 
-### Port notes
+The **Target window** picker (↻ to refresh) lists your open windows. Point a
+robobaspis at Roblox, a browser, an editor — anything. Roblox-specific actions
+(move/look/jump/reset/say) are used only when the target is a game; for other
+apps the agent sticks to see + click + keys.
 
-| Original (AutoIt / Windows) | Port (Python / Linux)                    |
-|-----------------------------|------------------------------------------|
-| `GUICreate` + `GUICtrl*`    | `tkinter`                                |
-| `WinActivate`/`WinWaitActive` | `xdotool search --name` + `windowactivate --sync` |
-| `Send("{BREAK}")`           | `xdotool key Pause`                      |
-| `Send("...")` text          | `xdotool type --delay 30`                |
-| `Send("{ENTER}")` / `{F12}` | `xdotool key Return` / `xdotool key F12` |
-| single `While 1` event loop | GUI main thread + daemon worker thread   |
+### How it sees and acts
 
-Behavior (randomized anti-idle cadence, the 56 sayings, the 200-cycle quiet
-window) is preserved from `Roboss.au3`, kept in this repo for reference.
+The agent is blind between look-ups and uses a **`see`** action on demand:
+it captures **only the target window's own pixels** (so overlapping windows,
+including Roboss itself, are never in frame) and asks the vision model to
+describe buttons, key prompts, tools, money, and surroundings — reporting
+positions as percentages. For small things it can **zoom** into a region
+(`hotbar`, `bottom-center`, `top-left`, …, or an explicit box).
 
-### Disclaimer
+Clicking uses **`click_object`**, which finds a named target and clicks its
+center with a **coarse-to-fine zoom** (locate roughly, then re-look at a tight
+crop centered on the guess) so a weak model's error shrinks to a few pixels. All
+coordinate mapping is done in code. **`click_here`** does a true blind click at
+the current mouse position without moving it.
 
-Roboss is a hobby proof-of-concept, ported for use on Linux. Distributed for
-free as an experimental open source application.
+For fast routines the agent can **program its own `sequence`** — a list of steps
+with `repeat`, `shuffle`, randomized `[min,max]` argument ranges, and an optional
+pacing `gap`. A sequence focuses the window once and runs back-to-back, so combos
+are one LLM call instead of many.
 
-### License
+**Action set:** `see`, `click_object`, `click_here`, `click`, `move`, `look`,
+`jump`, `reset`, `key`, `keys`, `say`, `wait`, `sequence`, `done`.
+
+---
+
+## Port notes
+
+| Original (AutoIt / Windows)   | Port (Python / Linux)                              |
+|-------------------------------|----------------------------------------------------|
+| `GUICreate` + `GUICtrl*`      | `tkinter`                                           |
+| `WinActivate`/`WinWaitActive` | `xdotool search` + `windowactivate --sync`          |
+| `Send("{BREAK}")`             | `xdotool key Pause`                                 |
+| `Send("...")` / `{ENTER}`     | `xdotool type` / `xdotool key Return`               |
+| single `While 1` loop         | GUI main thread + daemon worker/agent threads       |
+| —                             | Ollama vision/chat agent, Xlib capture, X hotkey    |
+
+Screenshots for the agent are grabbed via Xlib `get_image` on the target window
+(fast and occlusion-free), falling back to a full-screen grab if Xlib is absent.
+
+## Disclaimer
+
+Roboss is a hobby proof-of-concept. Automating Roblox may violate its terms of
+service; use it on your own account at your own risk. Distributed for free as an
+experimental open-source project.
+
+## License
 
 Published under the **CC0 1.0 Universal** license (see `LICENSE`).
