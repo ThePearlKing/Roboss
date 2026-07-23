@@ -317,15 +317,29 @@ class Roblox:
         return win_w, win_h
 
     def click_pct(self, xpct, ypct, button=1):
-        """Click at a position given as percentages (0-100) of the window,
-        mapped to absolute screen coordinates."""
+        """Click at a position given as percentages (0-100) of the window.
+
+        Positioned RELATIVE TO THE WINDOW (xdotool mousemove --window), i.e. the
+        exact same origin the screenshot is captured from. This avoids the
+        window-frame offset that `getwindowgeometry` reports (its X/Y do NOT
+        match the window's content origin) and is correct on multi-monitor."""
+        win = self._win or self._find()
+        if not win:
+            return
         geo = self.geometry()
         if not geo:
             return
-        x, y, w, h = geo
-        sx = x + max(0.0, min(float(xpct), 100.0)) / 100.0 * w
-        sy = y + max(0.0, min(float(ypct), 100.0)) / 100.0 * h
-        self.click_at(sx, sy, button)
+        _x, _y, w, h = geo
+        px = int(round(max(0.0, min(float(xpct), 100.0)) / 100.0 * w))
+        py = int(round(max(0.0, min(float(ypct), 100.0)) / 100.0 * h))
+        try:
+            subprocess.run(["xdotool", "mousemove", "--window", win,
+                            str(px), str(py)], capture_output=True, timeout=5)
+            time.sleep(0.05)               # let the game register the move
+            subprocess.run(["xdotool", "click", "--clearmodifiers", str(button)],
+                           capture_output=True, timeout=5)
+        except (subprocess.SubprocessError, OSError, ValueError):
+            pass
 
     def drag_right(self, dx, dy=0, steps=24, duration=0.45):
         """Rotate the camera with a smooth right-mouse drag (Roblox camera pan).
@@ -1569,13 +1583,13 @@ class App:
                  font=("TkDefaultFont", 13, "bold")).pack(anchor="w",
                                                           padx=12, pady=(12, 4))
 
-        # speech bubble — what the baspis is thinking / saying
+        # speech bubble — what the baspis is thinking / saying (dark themed)
         self.bubble = tk.Label(
-            left, text="…", bg="#e8f4ff", fg="#0a0a0f", wraplength=232,
+            left, text="…", bg="#1b2733", fg="#cfe0f0", wraplength=232,
             justify="left", anchor="w", padx=8, pady=5, bd=0,
             font=("TkDefaultFont", 9))
         self.bubble.pack(padx=12, pady=(2, 0), fill="x")
-        self.bubble_tail = tk.Label(left, text="▾", bg="#101018", fg="#e8f4ff",
+        self.bubble_tail = tk.Label(left, text="▾", bg="#101018", fg="#1b2733",
                                     font=("TkDefaultFont", 12))
         self.bubble_tail.pack(anchor="w", padx=26)
 
@@ -1771,7 +1785,9 @@ class App:
                  anchor="w").pack(fill="x", padx=12)
         logwrap = tk.Frame(bottom, bg="#101018")
         logwrap.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        sb = tk.Scrollbar(logwrap)
+        sb = tk.Scrollbar(logwrap, bg="#1a1a26", troughcolor="#0c0c12",
+                          activebackground="#2a2a48", highlightbackground="#101018",
+                          borderwidth=0, relief="flat", width=12)
         sb.pack(side="right", fill="y")
         self.log_txt = tk.Text(logwrap, height=6, bg="#08080c", fg="#9fe6c0",
                                relief="flat", highlightbackground="#1a1a26",
