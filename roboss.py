@@ -1326,6 +1326,9 @@ class Hotkey:
         try:
             self._d = display.Display()
             self._X = X
+            # ignore async X errors (e.g. BadAccess if the combo is already
+            # grabbed by another Roboss instance) instead of spamming stderr
+            self._d.set_error_handler(lambda *a, **k: None)
             root = self._d.screen().root
             self._root = root
             self._keycode = self._d.keysym_to_keycode(XK.string_to_keysym(self.key))
@@ -1711,15 +1714,14 @@ class App:
         self.steps_var = tk.StringVar(value=str(DEFAULT_CONFIG["max_steps"]))
         tk.Entry(prow, textvariable=self.steps_var, width=5, **ent).pack(
             side="left", padx=2)
-        # rainbow ∞ indicator — appears only when max steps is infinite
-        # (-1, 0, or a huge number)
-        self.inf_lbl = tk.Label(prow, text="∞", bg="#101018", fg="#ff0000",
-                                font=("TkDefaultFont", 11, "bold"))
-        self._inf_shown = False
+        # ∞ button — click to toggle infinite steps. White normally; animates
+        # rainbow only while the value is actually infinite (-1).
+        self.inf_lbl = tk.Label(prow, text="∞", bg="#101018", fg="#ffffff",
+                                cursor="hand2", font=("TkDefaultFont", 11, "bold"))
+        self.inf_lbl.pack(side="left", padx=(4, 0))
+        self.inf_lbl.bind("<Button-1>", lambda e: self._toggle_infinite())
         self._rainbow_hue = 0
         self._animate_rainbow()
-        self.steps_var.trace_add("write", lambda *a: self._update_inf_icon())
-        self._update_inf_icon()
 
         # ---- BOTTOM RIGHT: controls + mode select + log ----
         bottom = tk.Frame(right, **card)
@@ -2105,24 +2107,24 @@ class App:
             self.log_txt.config(state="disabled")
         self.root.after(0, apply)
 
-    def _update_inf_icon(self):
-        """Show the ∞ icon only when the max-steps value means infinite."""
-        inf = steps_infinite(self.steps_var.get())
-        if inf and not self._inf_shown:
-            self.inf_lbl.pack(side="left", padx=(4, 0))
-            self._inf_shown = True
-        elif not inf and self._inf_shown:
-            self.inf_lbl.pack_forget()
-            self._inf_shown = False
+    def _toggle_infinite(self):
+        """∞ button: toggle max steps between infinite (-1) and a finite value."""
+        if steps_infinite(self.steps_var.get()):
+            self.steps_var.set(str(DEFAULT_CONFIG["max_steps"]))
+        else:
+            self.steps_var.set("-1")
 
     def _animate_rainbow(self):
-        """Continuously cycle the ∞ icon through rainbow colors."""
+        """The ∞ button is white normally, and cycles rainbow while infinite."""
         import colorsys
-        self._rainbow_hue = (self._rainbow_hue + 6) % 360
-        r, g, b = colorsys.hsv_to_rgb(self._rainbow_hue / 360.0, 0.9, 1.0)
         try:
-            self.inf_lbl.config(fg="#%02x%02x%02x" % (int(r * 255), int(g * 255),
-                                                      int(b * 255)))
+            if steps_infinite(self.steps_var.get()):
+                self._rainbow_hue = (self._rainbow_hue + 6) % 360
+                r, g, b = colorsys.hsv_to_rgb(self._rainbow_hue / 360.0, 0.9, 1.0)
+                self.inf_lbl.config(fg="#%02x%02x%02x" % (int(r * 255),
+                                    int(g * 255), int(b * 255)))
+            else:
+                self.inf_lbl.config(fg="#ffffff")
             self.root.after(60, self._animate_rainbow)
         except tk.TclError:
             pass       # window closed
