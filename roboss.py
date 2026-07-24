@@ -2159,34 +2159,64 @@ class App:
                            "(is it open? need Pillow/Xlib)")
             return
         try:
-            ov = build_region_overlay(img, Agent.REGIONS)
-            import base64
-            import io
-            buf = io.BytesIO()
-            ov.save(buf, format="PNG")
-            photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()))
+            # render fairly large so it stays crisp when the window is maximized
+            self._region_src = build_region_overlay(img, Agent.REGIONS, max_w=1600)
         except Exception as e:
             self.agent_log("! regions overlay failed: %s" % e)
             return
         top = tk.Toplevel(self.root)
         top.title("Target regions & grid")
         top.configure(bg="#0a0a0f")
-        self._region_photo = photo            # keep a ref so it isn't GC'd
-        tk.Label(top, image=photo, bg="#0a0a0f").pack(padx=8, pady=8)
+        self._region_label = tk.Label(top, bg="#0a0a0f")
+        self._region_label.pack(fill="both", expand=True, padx=8, pady=8)
         tk.Label(top, bg="#0a0a0f", fg="#9fb3c8", justify="left",
                  text=("Cyan = region names you can use (center, bottom-center, "
                        "hotbar, top-left, ...).  Green box = the tool/hotbar area.\n"
                        "Faint red numbers = grid cells, for describing exact spots "
                        "to the robobaspis.")).pack(padx=8, pady=(0, 8))
-        # place it just to the RIGHT of the Roboss window (not overlapping) and
-        # keep it on top so it's always easy to find
+        # rescale the image to fit whenever the window is resized/maximized
+        self._region_resize_job = None
+
+        def on_cfg(e):
+            if e.widget is not top:
+                return
+            if self._region_resize_job:
+                top.after_cancel(self._region_resize_job)
+            self._region_resize_job = top.after(
+                60, lambda: self._fit_region_image(top))
+        top.bind("<Configure>", on_cfg)
+
+        # initial size: the overlay, capped to ~80% of the screen
+        sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+        iw = min(self._region_src.width + 16, int(sw * 0.8))
+        ih = min(self._region_src.height + 80, int(sh * 0.8))
         self.root.update_idletasks()
         rx = self.root.winfo_x() + self.root.winfo_width() + 12
-        ry = self.root.winfo_y()
-        top.geometry("+%d+%d" % (max(0, rx), max(0, ry)))
+        top.geometry("%dx%d+%d+%d" % (iw, ih, max(0, rx),
+                                      max(0, self.root.winfo_y())))
         top.lift()
         top.attributes("-topmost", True)
         top.focus_force()
+        top.update_idletasks()
+        self._fit_region_image(top)
+
+    def _fit_region_image(self, top):
+        """Scale the overlay to fit the current window size (keeps aspect)."""
+        src = getattr(self, "_region_src", None)
+        if src is None or not top.winfo_exists():
+            return
+        avail_w = max(80, top.winfo_width() - 24)
+        avail_h = max(80, top.winfo_height() - 70)   # leave room for the caption
+        scale = min(avail_w / src.width, avail_h / src.height)
+        nw = max(1, int(src.width * scale))
+        nh = max(1, int(src.height * scale))
+        import base64
+        import io
+        im = src.resize((nw, nh))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        self._region_photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()))
+        self._region_label.config(image=self._region_photo)
 
     def rb_refresh_models(self):
         models = Ollama(self.url_var.get()).list_models()
