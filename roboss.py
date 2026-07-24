@@ -51,8 +51,21 @@ OVERLAY_COLS = 8
 OVERLAY_ROWS = 8
 
 
-def cell_to_pct(cell, cols=OVERLAY_COLS, rows=OVERLAY_ROWS):
-    """Map a 1-based grid cell number to (xpct, ypct) of its center, or None."""
+# fractional position WITHIN a cell, for "the <part> part of cell N"
+CELL_PARTS = {
+    "center": (0.5, 0.5), "middle": (0.5, 0.5),
+    "left": (0.18, 0.5), "right": (0.82, 0.5),
+    "top": (0.5, 0.18), "bottom": (0.5, 0.82),
+    "top-left": (0.2, 0.2), "topleft": (0.2, 0.2),
+    "top-right": (0.8, 0.2), "topright": (0.8, 0.2),
+    "bottom-left": (0.2, 0.8), "bottomleft": (0.2, 0.8),
+    "bottom-right": (0.8, 0.8), "bottomright": (0.8, 0.8),
+}
+
+
+def cell_to_pct(cell, part=None, cols=OVERLAY_COLS, rows=OVERLAY_ROWS):
+    """Map a 1-based grid cell (optionally a part WITHIN it, e.g. 'right') to
+    (xpct, ypct), or None."""
     try:
         idx = int(cell) - 1
     except (ValueError, TypeError):
@@ -60,7 +73,8 @@ def cell_to_pct(cell, cols=OVERLAY_COLS, rows=OVERLAY_ROWS):
     if idx < 0 or idx >= cols * rows:
         return None
     c, r = idx % cols, idx // cols
-    return (c + 0.5) / cols * 100.0, (r + 0.5) / rows * 100.0
+    fx, fy = CELL_PARTS.get(str(part).lower().strip(), (0.5, 0.5))
+    return (c + fx) / cols * 100.0, (r + fy) / rows * 100.0
 
 
 def cell_to_region(cell, margin=0.6, cols=OVERLAY_COLS, rows=OVERLAY_ROWS):
@@ -852,12 +866,19 @@ there, or try click_object with a different name or region. Do NOT hunt for a \
 keyboard shortcut for buttons. Only use "key" when the screen shows a key prompt.
 
 GRID CELLS: the player can see a numbered 8x8 grid overlay (cells 1-64, \
-left-to-right then top-to-bottom). If the player tells you a target is on/near a \
-cell number (e.g. "the small Spawn button is on cell 45"), OBEY it: use \
-click_object with that "cell" and the target name, e.g. {{"action":"click_object",\
-"args":{{"target":"the Spawn button","cell":45}}}}. The cell zooms in there and \
-finds the exact (possibly small, off-center) target for you -- do not just click \
-the cell's center and do not ignore the player.
+left-to-right then top-to-bottom). If the player says a target is on/near a cell \
+number (e.g. "the small Spawn button is on cell 45"), OBEY it: click_object with \
+that "cell" and the target name, e.g. {{"action":"click_object","args":\
+{{"target":"the Spawn button","cell":45}}}}. That zooms into the cell and finds \
+the exact (small/off-center) target -- do not ignore the player.
+
+If the player points at a PART of a cell (e.g. "the right part of cell 27", "the \
+button is at the top-left of cell 12"), click that exact spot directly with \
+{{"action":"click","args":{{"cell":27,"part":"right"}}}}. "part" is a position \
+WITHIN the cell -- one of center, left, right, top, bottom, top-left, top-right, \
+bottom-left, bottom-right. IMPORTANT: "the right part of cell 27" means part \
+"right" of cell 27 -- it is NOT the whole-screen "right" region. Never use a \
+screen region name when the player is describing a spot inside a cell.
 
 DON'T REPEAT YOURSELF: if an action didn't do what you expected, do NOT just do \
 it again and again -- the same click often TOGGLES a thing back off. Try \
@@ -925,7 +946,7 @@ Available actions:
 - see          args: {{"query": "<what to look for>", "region": "<optional zoom area>"}}
 - click_object args: {{"target": "<what to click>", "region": "<optional zoom>", "cell": <optional 1-64 grid cell hint>}}  # locate + click it (accurate)
 - click_here   args: {{}}                                                       # click the CURRENT mouse spot without moving (blind click)
-- click        args: {{"xpct": <0-100>, "ypct": <0-100>}}                       # AVOID -- coordinates are unreliable; use click_object instead
+- click        args: {{"cell": <1-64>, "part": "<optional: center|left|right|top|bottom|corners>"}}  # click a grid cell / a part of it (from a player hint)
 - move   args: {{"direction": "forward|back|left|right", "seconds": <0.2-3>}}   # game movement (WASD)
 - look   args: {{"direction": "left|right|up|down", "amount": <10-120>}}        # turn game camera
 - jump   args: {{}}
@@ -1216,11 +1237,13 @@ class Agent:
             if name == "click":
                 changed = " The screen may have changed -- use 'see' to observe the result."
                 if "cell" in args:
-                    pc = cell_to_pct(args["cell"])
+                    part = args.get("part")
+                    pc = cell_to_pct(args["cell"], part)
                     if pc:
                         self.rbx.click_pct(*pc)
-                        return ("Clicked the center of cell %s (%.1f%%, %.1f%%)."
-                                % (args["cell"], pc[0], pc[1])) + changed
+                        where = ("the %s of " % part) if part else "the center of "
+                        return ("Clicked %scell %s (%.1f%%, %.1f%%)."
+                                % (where, args["cell"], pc[0], pc[1])) + changed
                     return "Bad cell number."
                 if "xpct" in args and "ypct" in args:
                     self.rbx.click_pct(args["xpct"], args["ypct"])
