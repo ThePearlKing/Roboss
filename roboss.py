@@ -46,6 +46,37 @@ DEFAULT_OLLAMA_URL = "http://localhost:11434"
 # max_steps at or beyond this (or <= 0) means "run forever" and shows the ∞ icon
 INF_STEPS = 100000
 
+# the numbered grid shown by the region overlay / usable by "click cell N"
+OVERLAY_COLS = 8
+OVERLAY_ROWS = 8
+
+
+def cell_to_pct(cell, cols=OVERLAY_COLS, rows=OVERLAY_ROWS):
+    """Map a 1-based grid cell number to (xpct, ypct) of its center, or None."""
+    try:
+        idx = int(cell) - 1
+    except (ValueError, TypeError):
+        return None
+    if idx < 0 or idx >= cols * rows:
+        return None
+    c, r = idx % cols, idx // cols
+    return (c + 0.5) / cols * 100.0, (r + 0.5) / rows * 100.0
+
+
+def cell_to_region(cell, margin=0.6, cols=OVERLAY_COLS, rows=OVERLAY_ROWS):
+    """Map a 1-based grid cell to a window-% box around it (expanded by
+    `margin` cells each side) to use as a zoom region, or None."""
+    try:
+        idx = int(cell) - 1
+    except (ValueError, TypeError):
+        return None
+    if idx < 0 or idx >= cols * rows:
+        return None
+    c, r = idx % cols, idx // cols
+    cw, ch = 100.0 / cols, 100.0 / rows
+    return (max(0.0, (c - margin) * cw), max(0.0, (r - margin) * ch),
+            min(100.0, (c + 1 + margin) * cw), min(100.0, (r + 1 + margin) * ch))
+
 
 def steps_infinite(value):
     try:
@@ -681,6 +712,69 @@ def list_windows():
     return wins
 
 
+def build_region_overlay(img, regions, cols=OVERLAY_COLS, rows=OVERLAY_ROWS,
+                         max_w=900):
+    """Annotate a screenshot with a faint numbered grid + named-region labels,
+    so a human can see where 'center', 'bottom-center', 'hotbar', etc. are and
+    reference them when telling a robobaspis where things are."""
+    from PIL import Image, ImageDraw
+    img = img.convert("RGBA")
+    if img.width > max_w:
+        img = img.resize((max_w, round(img.height * max_w / img.width)))
+    w, h = img.size
+    ov = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+
+    # faint numbered grid
+    for c in range(1, cols):
+        x = w * c // cols
+        d.line([(x, 0), (x, h)], fill=(255, 90, 90, 80), width=1)
+    for r in range(1, rows):
+        y = h * r // rows
+        d.line([(0, y), (w, y)], fill=(255, 90, 90, 80), width=1)
+    n = 1
+    for r in range(rows):
+        for c in range(cols):
+            d.text((w * c // cols + 3, h * r // rows + 2), str(n),
+                   fill=(255, 255, 0, 110))
+            n += 1
+
+    def label(text, cx, cy, color):
+        ox = len(text) * 3
+        for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1),
+                       (-1, 0), (1, 0), (0, -1), (0, 1)):
+            d.text((cx - ox + dx, cy + dy), text, fill=(0, 0, 0, 230))
+        d.text((cx - ox, cy), text, fill=color)
+
+    # borders around the 3x3 named zones (thirds)
+    for i in (1, 2):
+        x = w * i // 3
+        d.line([(x, 0), (x, h)], fill=(0, 220, 255, 190), width=2)
+        y = h * i // 3
+        d.line([(0, y), (w, y)], fill=(0, 220, 255, 190), width=2)
+
+    # 3x3 named zones at clean thirds
+    zones = [("top-left", 1, 1), ("top", 3, 1), ("top-right", 5, 1),
+             ("left", 1, 3), ("center", 3, 3), ("right", 5, 3),
+             ("bottom-left", 1, 5), ("bottom", 3, 5), ("bottom-right", 5, 5)]
+    for name, cx6, cy6 in zones:
+        label(name, w * cx6 // 6, h * cy6 // 6, (0, 240, 255, 255))
+
+    # highlight the special bottom regions games use for tool bars
+    for name in ("bottom-center", "hotbar"):
+        if name not in regions:
+            continue
+        x0, y0, x1, y1 = regions[name]
+        box = (w * x0 // 100, h * y0 // 100, w * x1 // 100 - 1, h * y1 // 100 - 1)
+        d.rectangle(box, outline=(120, 255, 180, 230), width=2)
+    hb = regions.get("hotbar")
+    if hb:
+        label("hotbar / bottom-center", w // 2, int(h * (hb[1] - 5) / 100),
+              (120, 255, 180, 255))
+
+    return Image.alpha_composite(img, ov).convert("RGB")
+
+
 def _safe_name(name):
     keep = "".join(c if c.isalnum() or c in "-_ " else "" for c in name).strip()
     return (keep or "baspis").replace(" ", "_")
@@ -743,14 +837,31 @@ something you did. If the player asks a question you can answer from what you \
 already know, just answer it (put it in "text"); don't screenshot. Respond with \
 EXACTLY ONE JSON object and NOTHING else -- no prose, no markdown, no fences.
 
-CLICKING -- to press an on-screen BUTTON, MENU, or ICON, prefer "click_object" \
-with a short description of the target (e.g. {{"action":"click_object","args":\
-{{"target":"the chest button","region":"bottom-center"}}}}). It finds the target \
-and clicks its exact center for you -- this is far more accurate than guessing \
-coordinates. For a small target, also pass a "region" to zoom in for precision. \
-Only use raw "click" with xpct/ypct if you already have exact coordinates. Do \
-NOT hunt for a keyboard shortcut for buttons -- buttons are clicked. Only use \
-"key" when the screen literally shows a key prompt.
+CLICKING -- to press an on-screen BUTTON, MENU, or ICON, use "click_object" \
+DIRECTLY with a short description (e.g. {{"action":"click_object","args":\
+{{"target":"the Spawn Creature button"}}}}). click_object finds AND clicks the \
+target itself, so do NOT "see" first just to locate a button you are about to \
+click -- that wastes time and the descriptions are unreliable. Reserve "see" for \
+READING text/numbers or checking a result, not for hunting a button. \
+NEVER use the raw "click" action with xpct/ypct, and NEVER click coordinates you \
+read from a "see" description or remember from an earlier click -- those are \
+guesses or stale and WILL miss. To click ANYTHING, ALWAYS use click_object; it \
+locates the target fresh each time. If click_object says it cannot find the \
+target, do NOT fall back to guessing coordinates -- "see" to check it is really \
+there, or try click_object with a different name or region. Do NOT hunt for a \
+keyboard shortcut for buttons. Only use "key" when the screen shows a key prompt.
+
+GRID CELLS: the player can see a numbered 8x8 grid overlay (cells 1-64, \
+left-to-right then top-to-bottom). If the player tells you a target is on/near a \
+cell number (e.g. "the small Spawn button is on cell 45"), OBEY it: use \
+click_object with that "cell" and the target name, e.g. {{"action":"click_object",\
+"args":{{"target":"the Spawn button","cell":45}}}}. The cell zooms in there and \
+finds the exact (possibly small, off-center) target for you -- do not just click \
+the cell's center and do not ignore the player.
+
+DON'T REPEAT YOURSELF: if an action didn't do what you expected, do NOT just do \
+it again and again -- the same click often TOGGLES a thing back off. Try \
+something different, or if the goal is done / not possible, use "done".
 
 BLIND CLICK -- if the human tells you NOT to move the mouse (e.g. "blind click", \
 "don't move, just click", "click where my cursor is"), you MUST use \
@@ -777,8 +888,11 @@ Within one unchanged screen, one "see" already lists everything, so don't "see" 
 twice in a row without acting. Pass the (x%, y%) it reports straight to "click" \
 as xpct/ypct. Don't guess positions.
 
-You may get a "PLAYER MESSAGE" from the human at any time -- treat it as new \
-instructions/information and adapt.
+You may get a "PLAYER MESSAGE" from the human at any time. It is AUTHORITATIVE \
+and describes the CURRENT truth -- obey it immediately over your own assumptions. \
+If the player says something isn't there, you already did it, or to stop, then \
+STOP doing that and adjust. Do not keep repeating an action the player just told \
+you failed or is unnecessary.
 
 If the target is a ROBLOX game: "move" walks (WASD), "look" turns the camera, \
 tool/hotbar slots are small at the very bottom-CENTER (use region "hotbar" to \
@@ -809,9 +923,9 @@ Available actions:
 - sequence     args: {{"steps":[<action>,...], "repeat":<int>, "shuffle":<bool>, "gap":<seconds, 0=fastest>}}  # program a routine (numeric args may be [min,max])
 - keys         args: {{"keys":["w","a","s","d"], "delay":<ms>}}                  # fast burst of key presses in one call
 - see          args: {{"query": "<what to look for>", "region": "<optional zoom area>"}}
-- click_object args: {{"target": "<what to click>", "region": "<optional zoom area>"}}  # locate + click its center (accurate)
+- click_object args: {{"target": "<what to click>", "region": "<optional zoom>", "cell": <optional 1-64 grid cell hint>}}  # locate + click it (accurate)
 - click_here   args: {{}}                                                       # click the CURRENT mouse spot without moving (blind click)
-- click        args: {{"xpct": <0-100>, "ypct": <0-100>}}                       # click exact % position (only if you have precise coords)
+- click        args: {{"xpct": <0-100>, "ypct": <0-100>}}                       # AVOID -- coordinates are unreliable; use click_object instead
 - move   args: {{"direction": "forward|back|left|right", "seconds": <0.2-3>}}   # game movement (WASD)
 - look   args: {{"direction": "left|right|up|down", "amount": <10-120>}}        # turn game camera
 - jump   args: {{}}
@@ -925,6 +1039,7 @@ class Agent:
             messages = [{"role": "system", "content": system},
                         {"role": "user",
                          "content": "Begin. Emit your first action as one JSON object."}]
+            recent_sigs = []                          # loop-detection history
             max_steps = int(cfg.get("max_steps", 40))
             infinite = steps_infinite(max_steps)      # -1/0/huge => run forever
             steps_label = "∞" if infinite else str(max_steps)
@@ -980,6 +1095,29 @@ class Agent:
                 if name == "done":
                     self.app.agent_log("* goal complete")
                     break
+
+                # --- loop detection: don't keep repeating a useless action ---
+                sig = name + ":" + json.dumps(args, sort_keys=True)[:120]
+                recent_sigs.append(sig)
+                reps = recent_sigs[-8:].count(sig)
+                if reps >= 3:
+                    if recent_sigs[-12:].count(sig) >= 5:
+                        self.app.baspis_say("Stuck in a loop — stopping.")
+                        self.app.agent_log("* stopped: repeated the same action")
+                        break
+                    self.app.agent_log("! loop: '%s' repeated — intervening" % name)
+                    self.app.agent_status(acting=False)
+                    messages.append({"role": "assistant", "content": reply})
+                    messages.append({"role": "user", "content":
+                        "STOP: you have already done this exact action several "
+                        "times and it is NOT making progress (you may be toggling "
+                        "something on and off, or hunting for something that isn't "
+                        "there). Do NOT repeat it. Re-read the most recent PLAYER "
+                        "MESSAGE and obey it. If the goal is already done or not "
+                        "possible, reply {\"action\":\"done\"}. Otherwise pick a "
+                        "clearly DIFFERENT action."})
+                    continue
+
                 result = self._do(name, args)
                 self.app.agent_status(acting=False)
 
@@ -1070,13 +1208,20 @@ class Agent:
                 return "Pressed %s." % k
             if name in ("click_object", "click_target", "find_and_click"):
                 return self._click_object(str(args.get("target", "")),
-                                          args.get("region"))
+                                          args.get("region"), args.get("cell"))
             if name in ("click_here", "blind_click", "clickhere"):
                 self.rbx.click()      # click current pointer spot; never moves it
                 return ("Blind-clicked at the current mouse position (mouse not "
                         "moved). The screen may have changed -- 'see' to check.")
             if name == "click":
                 changed = " The screen may have changed -- use 'see' to observe the result."
+                if "cell" in args:
+                    pc = cell_to_pct(args["cell"])
+                    if pc:
+                        self.rbx.click_pct(*pc)
+                        return ("Clicked the center of cell %s (%.1f%%, %.1f%%)."
+                                % (args["cell"], pc[0], pc[1])) + changed
+                    return "Bad cell number."
                 if "xpct" in args and "ypct" in args:
                     self.rbx.click_pct(args["xpct"], args["ypct"])
                     return ("Clicked at (%s%%, %s%%)." % (args["xpct"], args["ypct"])) + changed
@@ -1175,31 +1320,63 @@ class Agent:
         self.app.agent_log("  👁 %s" % desc.strip().replace("\n", " ")[:300])
         return "Saw the screen: " + desc.strip()
 
-    LOCATE_PROMPT = (
-        "This image is {w}x{h} pixels.{zoom} Find: {target}\n"
-        "Reply with ONLY a JSON object and nothing else:\n"
-        '{{"found": true or false, "x": <pixel X>, "y": <pixel Y>}}\n'
-        "where x,y are the CENTER of the target in PIXELS in this image "
-        "(x from 0 to {w}, y from 0 to {h}). If it is not visible, found=false.")
+    GRID_PROMPT = (
+        "This screenshot has a red grid drawn on it. Each cell has a yellow "
+        "number in its center, from 1 (top-left) increasing left-to-right then "
+        "top-to-bottom, up to {n} (bottom-right).\n"
+        "Find: {target}\n"
+        "Reply with ONLY a JSON object, nothing else:\n"
+        '{{"found": true or false, "cell": <the number printed in the cell that '
+        'covers the target>}}\n'
+        "Read the yellow number that sits ON TOP of the target. If the target is "
+        "not visible, set found=false.")
 
-    def _locate(self, model, target, box):
-        """One vision localization pass. `box` = window-% crop (or None=full).
-        Returns (win_x%, win_y%) or None if not found/failed."""
+    def _grid_image(self, path, cols, rows):
+        """Overlay a numbered red grid on the saved screenshot in place."""
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            return False
+        try:
+            img = Image.open(path).convert("RGB")
+        except OSError:
+            return False
+        w, h = img.size
+        d = ImageDraw.Draw(img)
+        for c in range(1, cols):
+            x = w * c // cols
+            d.line([(x, 0), (x, h)], fill=(255, 40, 40), width=2)
+        for r in range(1, rows):
+            y = h * r // rows
+            d.line([(0, y), (w, y)], fill=(255, 40, 40), width=2)
+        n = 1
+        for r in range(rows):
+            for c in range(cols):
+                cx = w * c // cols + (w // cols) // 2 - 4
+                cy = h * r // rows + (h // rows) // 2 - 6
+                for ox, oy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+                    d.text((cx + ox, cy + oy), str(n), fill=(0, 0, 0))
+                d.text((cx, cy), str(n), fill=(255, 255, 0))
+                n += 1
+        img.save(path)
+        return True
+
+    def _locate(self, model, target, box, cols=8, rows=6):
+        """One vision localization pass using a NUMBERED GRID (cell picking is
+        far more reliable for small vision models than raw coordinates).
+        `box` = window-% crop (or None=full). Returns (win_x%, win_y%) or None."""
         path = os.path.join(ASSET_DIR, ".baspis_view.png")
         if not self.rbx.screenshot(path, region=box):
             return None
-        try:
-            from PIL import Image
-            iw, ih = Image.open(path).size
-        except Exception:
-            iw, ih = 1000, 1000
-        zoom = (" It is a zoomed-in crop; the target should be near the center."
-                if box else "")
+        if not self._grid_image(path, cols, rows):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return None
         try:
             reply = self.ollama.vision(
-                model,
-                self.LOCATE_PROMPT.format(w=iw, h=ih, zoom=zoom, target=target),
-                path)
+                model, self.GRID_PROMPT.format(n=cols * rows, target=target), path)
         except (urllib.error.URLError, OSError, ValueError):
             return None
         finally:
@@ -1211,27 +1388,26 @@ class Agent:
         if not obj.get("found"):
             return None
         try:
-            ix, iy = float(obj["x"]), float(obj["y"])
+            cell = int(obj["cell"])
         except (KeyError, ValueError, TypeError):
             return None
-        # Coords may be pixels (Qwen-VL style) or 0-100 percent. If both are
-        # <=100 treat as percent, else normalize by the image size.
-        if ix <= 100 and iy <= 100:
-            fx, fy = ix / 100.0, iy / 100.0
-        else:
-            fx = ix / iw if iw else 0.0
-            fy = iy / ih if ih else 0.0
-        fx = max(0.0, min(fx, 1.0))
-        fy = max(0.0, min(fy, 1.0))
+        if cell < 1 or cell > cols * rows:
+            return None
+        idx = cell - 1
+        c, r = idx % cols, idx // cols
+        fx = (c + 0.5) / cols
+        fy = (r + 0.5) / rows
         if box:
             x0, y0, x1, y1 = box
             return x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
         return fx * 100.0, fy * 100.0
 
-    def _click_object(self, target, region=None):
+    def _click_object(self, target, region=None, cell=None):
         """Locate a named target and click its exact center, using a
         COARSE-TO-FINE zoom: find it roughly, then re-look at a tight crop
         centered on the guess so the same model error shrinks to a few pixels.
+        A `cell` hint (from the region overlay's grid) zooms straight to that
+        cell's neighborhood so a small, off-center target is found precisely.
         All crop->window mapping is done in code, not by the model."""
         if not target.strip():
             return "click_object needs a 'target' description."
@@ -1239,23 +1415,33 @@ class Agent:
         if model not in self.ollama.list_models():
             return "Cannot see: vision model '%s' not installed." % model
         box, _label = self._resolve_region(region)
+        if cell is not None:                        # player pointed at a grid cell
+            cb = cell_to_region(cell)
+            if cb:
+                box = cb
         self.app.agent_status(seeing=True)
         wx = wy = None
         try:
-            # coarse pass (given region); if a region was given and it misses,
-            # fall back to the full window before giving up
-            loc = self._locate(model, target, box)
+            # coarse pass on a big numbered grid; if a supplied region misses,
+            # fall back to the full window, then to a center crop (popups/dialogs
+            # usually open in the middle) before giving up
+            loc = self._locate(model, target, box, cols=8, rows=8)
             if loc is None and box is not None:
-                loc = self._locate(model, target, None)
+                loc = self._locate(model, target, None, cols=8, rows=8)
             if loc is None:
-                return ("Could not find '%s' on screen. 'see' first to confirm "
-                        "it is visible, or describe it differently." % target)
+                loc = self._locate(model, target, (18.0, 18.0, 82.0, 82.0),
+                                   cols=7, rows=7)
+            if loc is None:
+                return ("Could not find '%s' on screen. Do NOT guess coordinates "
+                        "or use raw 'click' -- 'see' to confirm it is actually "
+                        "visible, or try click_object with a different name/region."
+                        % target)
             wx, wy = loc
-            # refine: re-look at a tight crop centered on the current guess
-            for hw, hh in ((22.0, 18.0), (11.0, 9.0)):
+            # refine: zoom to a crop centered on the guess, finer grid on it
+            for hw, hh in ((16.0, 16.0), (7.0, 7.0)):
                 nb = (max(0.0, wx - hw), max(0.0, wy - hh),
                       min(100.0, wx + hw), min(100.0, wy + hh))
-                loc = self._locate(model, target, nb)
+                loc = self._locate(model, target, nb, cols=6, rows=6)
                 if loc is None:
                     break                          # keep the last good estimate
                 wx, wy = loc
@@ -1724,6 +1910,9 @@ class App:
         tk.Button(tr, text="↻", command=self.rb_refresh_targets, width=3,
                   bg="#1a1a28", fg="#cfe8ff", relief="ridge", bd=1
                   ).pack(side="left", padx=4)
+        tk.Button(tr, text="🗺 Regions", command=self.rb_show_regions,
+                  bg="#1a2a3a", fg="#cfe8ff", activebackground="#22344a",
+                  relief="ridge", bd=1).pack(side="left")
 
         tk.Label(settings, text="Personality", bg="#101018", fg="#7a7a99",
                  anchor="w").pack(fill="x", pady=(6, 0), **pad)
@@ -1958,6 +2147,46 @@ class App:
         self._rebuild_target_menu()
         if keep not in self._targets:
             self.target_var.set(AUTO_TARGET_LABEL)
+
+    def rb_show_regions(self):
+        """Pop up the target window's screenshot annotated with the named
+        regions + a faint numbered grid, so you can see where things are."""
+        cfg = self.rb_gather()
+        rbx = Roblox(matchers=target_matchers(cfg))
+        img = rbx.capture_image()
+        if img is None:
+            self.agent_log("! regions: can't capture target window "
+                           "(is it open? need Pillow/Xlib)")
+            return
+        try:
+            ov = build_region_overlay(img, Agent.REGIONS)
+            import base64
+            import io
+            buf = io.BytesIO()
+            ov.save(buf, format="PNG")
+            photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()))
+        except Exception as e:
+            self.agent_log("! regions overlay failed: %s" % e)
+            return
+        top = tk.Toplevel(self.root)
+        top.title("Target regions & grid")
+        top.configure(bg="#0a0a0f")
+        self._region_photo = photo            # keep a ref so it isn't GC'd
+        tk.Label(top, image=photo, bg="#0a0a0f").pack(padx=8, pady=8)
+        tk.Label(top, bg="#0a0a0f", fg="#9fb3c8", justify="left",
+                 text=("Cyan = region names you can use (center, bottom-center, "
+                       "hotbar, top-left, ...).  Green box = the tool/hotbar area.\n"
+                       "Faint red numbers = grid cells, for describing exact spots "
+                       "to the robobaspis.")).pack(padx=8, pady=(0, 8))
+        # place it just to the RIGHT of the Roboss window (not overlapping) and
+        # keep it on top so it's always easy to find
+        self.root.update_idletasks()
+        rx = self.root.winfo_x() + self.root.winfo_width() + 12
+        ry = self.root.winfo_y()
+        top.geometry("+%d+%d" % (max(0, rx), max(0, ry)))
+        top.lift()
+        top.attributes("-topmost", True)
+        top.focus_force()
 
     def rb_refresh_models(self):
         models = Ollama(self.url_var.get()).list_models()
