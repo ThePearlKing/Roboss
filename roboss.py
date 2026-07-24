@@ -944,7 +944,7 @@ Available actions:
 - sequence     args: {{"steps":[<action>,...], "repeat":<int>, "shuffle":<bool>, "gap":<seconds, 0=fastest>}}  # program a routine (numeric args may be [min,max])
 - keys         args: {{"keys":["w","a","s","d"], "delay":<ms>}}                  # fast burst of key presses in one call
 - see          args: {{"query": "<what to look for>", "region": "<optional zoom area>"}}
-- click_object args: {{"target": "<what to click>", "region": "<optional zoom>", "cell": <optional 1-64 grid cell hint>}}  # locate + click it (accurate)
+- click_object args: {{"target": "<what to click>", "region": "<zoom>", "cell": <1-64 hint>, "part": "<part of cell>"}}  # locate + click (accurate)
 - click_here   args: {{}}                                                       # click the CURRENT mouse spot without moving (blind click)
 - click        args: {{"cell": <1-64>, "part": "<optional: center|left|right|top|bottom|corners>"}}  # click a grid cell / a part of it (from a player hint)
 - move   args: {{"direction": "forward|back|left|right", "seconds": <0.2-3>}}   # game movement (WASD)
@@ -1229,7 +1229,8 @@ class Agent:
                 return "Pressed %s." % k
             if name in ("click_object", "click_target", "find_and_click"):
                 return self._click_object(str(args.get("target", "")),
-                                          args.get("region"), args.get("cell"))
+                                          args.get("region"), args.get("cell"),
+                                          args.get("part"))
             if name in ("click_here", "blind_click", "clickhere"):
                 self.rbx.click()      # click current pointer spot; never moves it
                 return ("Blind-clicked at the current mouse position (mouse not "
@@ -1425,12 +1426,13 @@ class Agent:
             return x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
         return fx * 100.0, fy * 100.0
 
-    def _click_object(self, target, region=None, cell=None):
+    def _click_object(self, target, region=None, cell=None, part=None):
         """Locate a named target and click its exact center, using a
         COARSE-TO-FINE zoom: find it roughly, then re-look at a tight crop
         centered on the guess so the same model error shrinks to a few pixels.
-        A `cell` hint (from the region overlay's grid) zooms straight to that
-        cell's neighborhood so a small, off-center target is found precisely.
+        A `cell` hint (from the region overlay's grid) zooms to that cell; a
+        `part` narrows to a spot within the cell. If the vision search fails but
+        a cell (and part) were given, click that exact spot instead.
         All crop->window mapping is done in code, not by the model."""
         if not target.strip():
             return "click_object needs a 'target' description."
@@ -1439,9 +1441,17 @@ class Agent:
             return "Cannot see: vision model '%s' not installed." % model
         box, _label = self._resolve_region(region)
         if cell is not None:                        # player pointed at a grid cell
-            cb = cell_to_region(cell)
-            if cb:
-                box = cb
+            if part:                                # ...and a part within it
+                pc = cell_to_pct(cell, part)
+                if pc:
+                    px, py = pc
+                    cw, ch = 100.0 / OVERLAY_COLS, 100.0 / OVERLAY_ROWS
+                    box = (max(0.0, px - cw * 0.7), max(0.0, py - ch * 0.7),
+                           min(100.0, px + cw * 0.7), min(100.0, py + ch * 0.7))
+            else:
+                cb = cell_to_region(cell)
+                if cb:
+                    box = cb
         self.app.agent_status(seeing=True)
         wx = wy = None
         try:
@@ -1455,6 +1465,14 @@ class Agent:
                 loc = self._locate(model, target, (18.0, 18.0, 82.0, 82.0),
                                    cols=7, rows=7)
             if loc is None:
+                if cell is not None:
+                    pc = cell_to_pct(cell, part)
+                    if pc:
+                        self.app.agent_status(seeing=False)
+                        self.rbx.click_pct(*pc)
+                        return ("Couldn't visually confirm '%s', so clicked the "
+                                "%s of cell %s (%.1f%%, %.1f%%) as you said."
+                                % (target, part or "center", cell, pc[0], pc[1]))
                 return ("Could not find '%s' on screen. Do NOT guess coordinates "
                         "or use raw 'click' -- 'see' to confirm it is actually "
                         "visible, or try click_object with a different name/region."
